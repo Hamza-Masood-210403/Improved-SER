@@ -110,40 +110,43 @@ class SelfAttentionLayer(nn.Module):
     def __init__(self, in_dim, out_dim, alpha=0.2):
         super(SelfAttentionLayer, self).__init__()
         self.W = nn.Linear(in_dim, out_dim, bias=False)
-        self.a = nn.Parameter(torch.FloatTensor(2 * out_dim))
+        self.a = nn.Parameter(torch.FloatTensor(out_dim,1))
         self.leakyrelu = nn.LeakyReLU(alpha)
         nn.init.xavier_uniform_(self.W.weight)
         nn.init.xavier_uniform_(self.a.view(-1, 1))
         
     def forward(self, H):
-        Wh = self.W(H)  # Transform node features, shape (N, out_dim)
-        Wh1 = Wh.unsqueeze(1)  # Shape (N, 1, out_dim)
-        Wh2 = Wh.unsqueeze(0)  # Shape (1, N, out_dim)
+        Wh = self.W(H)
+        Wh1 = Wh.unsqueeze(2)
+        Wh2 = Wh.unsqueeze(1)
         
         # Apply LeakyReLU to the concatenated features before computing e
-        e = self.leakyrelu(Wh1 + Wh2)  # Shape (N, N, out_dim)
-        e = torch.matmul(e, self.a).squeeze(2)  # Shape (N, N)
-        attention = F.softmax(e, dim=1)  # Softmax normalization for attention scores, shape (N, N)
-        
+        e = self.leakyrelu(Wh1 + Wh2)
+
+        e = torch.matmul(e, self.a).squeeze(-1)
+
+        # Softmax normalization for attention scores
+        attention = F.softmax(e, dim=-1)
+
         # Attention-weighted feature aggregation
-        H_att = torch.matmul(attention, Wh)  # Shape (N, out_dim)
+        H_att = torch.bmm(attention, Wh)
         return H_att
 
 
-# class KAF(nn.Module):
-#     def __init__(self, D=20, gamma=1.0):
-#         super(KAF, self).__init__()
-#         # Dictionary of D elements uniformly spaced around zero
-#         self.d = nn.Parameter(torch.linspace(-2, 2, D), requires_grad=False)
-#         # Mixing coefficients (alpha) initialized randomly and learned
-#         self.alpha = nn.Parameter(torch.randn(D))
-#         # Width of the Gaussian kernel
-#         self.gamma = gamma
+class KAF_random(nn.Module):
+    def __init__(self, D=20, gamma=1.0):
+        super(KAF, self).__init__()
+        # Dictionary of D elements uniformly spaced around zero
+        self.d = nn.Parameter(torch.linspace(-2, 2, D), requires_grad=False)
+        # Mixing coefficients (alpha) initialized randomly and learned
+        self.alpha = nn.Parameter(torch.randn(D))
+        # Width of the Gaussian kernel
+        self.gamma = gamma
 
-#     def forward(self, x):
-#         # Apply kernel expansion: sum(alpha * Gaussian kernel)
-#         gauss_kernels = torch.exp(-self.gamma * (x.unsqueeze(-1) - self.d)**2)
-#         return torch.matmul(gauss_kernels, self.alpha)
+    def forward(self, x):
+        # Apply kernel expansion: sum(alpha * Gaussian kernel)
+        gauss_kernels = torch.exp(-self.gamma * (x.unsqueeze(-1) - self.d)**2)
+        return torch.matmul(gauss_kernels, self.alpha)
 
 class KAF(nn.Module):
     def __init__(self, D=20, gamma=1.0, epsilon=1e-5):
@@ -171,11 +174,9 @@ class KAF(nn.Module):
         gauss_kernels = torch.exp(-self.gamma * (x.unsqueeze(-1) - self.d)**2)
         return torch.matmul(gauss_kernels, self.alpha)
 
-
-
 class Graph_CNN_ortega(nn.Module):
     def __init__(self, num_layers, input_dim, hidden_dim, output_dim, final_dropout,
-                 graph_pooling_type, device, adj, D=10, gamma=1.0):
+                 graph_pooling_type, activation_fn, use_attention, device, adj, D=10, gamma=1.0):
         super(Graph_CNN_ortega, self).__init__()
 
         self.final_dropout = final_dropout
@@ -184,6 +185,8 @@ class Graph_CNN_ortega(nn.Module):
         self.graph_pooling_type = graph_pooling_type
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.activation_fn = activation_fn
+        self.use_attention = use_attention
 
         ### Adj matrix
         self.Adj = adj
@@ -195,7 +198,10 @@ class Graph_CNN_ortega(nn.Module):
             self.GCNs.append(GraphConv_Ortega(self.hidden_dim, self.hidden_dim))
 
         # Initialize KAF for activation
-        self.kaf = KAF(D=D, gamma=gamma)
+        if(self.activation_fn == "kaf"):
+            self.kaf = KAF(D=D, gamma=gamma)
+        else:
+            self.kaf = KAF_random(D=D, gamma=gamma)
 
         # Self-attention layer
         self.attention_layer = SelfAttentionLayer(hidden_dim, hidden_dim)
@@ -213,14 +219,19 @@ class Graph_CNN_ortega(nn.Module):
 
         h = X_concat
         for layer in self.GCNs:
-            h = self.kaf(layer(h, A))  # Apply KAF instead of ReLU
+            if(self.activation_fn == "relu"):
+                h = F.relu(layer(h,A))
+            else:
+                h = self.kaf(layer(h, A))  # Apply KAF instead of ReLU
+                
         # for i, layer in enumerate(self.GCNs):
         #     if i < self.num_layers // 2:
         #         h = F.relu(layer(h, A))  # Use ReLU in the first half
         #     else:
         #         h = self.kaf(layer(h, A))  # Use KAF in the second half
 
-        h = self.attention_layer(h)
+        if(self.use_attention):
+            h = self.attention_layer(h)
 
         if self.graph_pooling_type == 'mean':
             pooled = torch.mean(h, dim=1)

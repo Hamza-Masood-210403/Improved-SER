@@ -144,6 +144,10 @@ def main():
                         help='Graph construction options')
     parser.add_argument('--Normalize', type=bool, default=True, choices=[True, False],
                         help='Normalizing data')
+    parser.add_argument('--attention_layer', type=bool, default=True, choices=[True, False],
+                        help='Adds attention layer at the end')
+    parser.add_argument('--activation', type=str, default="kaf", choices=["relu", "kaf", "random_kaf"],
+                        help='Aggregation function to use: relu, kaf or random_kaf')
     parser.add_argument('--patience', type=int, default=10,
                         help='Normalizing data')
     parser.add_argument('--beta1', default=0.9, type=float,
@@ -174,7 +178,7 @@ def main():
     A = torch.Tensor(A).to(device)
 
     model = Graph_CNN_ortega(args.num_layers, train_graphs[0][0].node_features.shape[1],
-                            args.hidden_dim, num_classes, args.final_dropout, args.graph_pooling_type,
+                            args.hidden_dim, num_classes, args.final_dropout, args.graph_pooling_type, args.activation, args.attention_layer,
                             device, A).to(device)
 
     Num_Param = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -245,7 +249,7 @@ def main():
         total_test_samples += len(test_data)
 
         model = Graph_CNN_ortega(args.num_layers, train_graphs[0][0].node_features.shape[1],
-                                 args.hidden_dim, num_classes, args.final_dropout, args.graph_pooling_type,
+                                 args.hidden_dim, num_classes, args.final_dropout, args.graph_pooling_type, args.activation, args.attention_layer,
                                  device, A).to(device)
 
     print(
